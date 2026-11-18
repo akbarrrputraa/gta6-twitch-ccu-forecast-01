@@ -37,11 +37,13 @@ The program fits its model at run time from the case's own `comparables`
    1 and stay flat; smaller hour-1 launches grow 2–3× into the US
    evening (leave-one-out correlation ≈ −0.85).
 3. **Second signal**: the hour just before midnight (already holding the
-   New Zealand / early-Europe wave) relative to hour 1, at half weight.
-   The regression's residual spread is the forecast's log spread
-   (floored 0.15, capped 0.90).
+   New Zealand / early-Europe wave) relative to hour 1, applied at full
+   weight. Each hour's residual spread is shrunk toward the pooled
+   spread across all hours (16 pseudo-observations), because a per-hour
+   spread fitted on ~16 launches is noisy. The shrunk spread is the
+   forecast's log spread (floored 0.15, capped 0.90).
 
-Leave-one-out pinball loss on the 16 qualifying launches: **0.180**,
+Leave-one-out pinball loss on the 16 qualifying launches: **0.177**,
 vs 0.276 for the house persistence baseline on the same launches and
 0.225 for a scale-free empirical-quantile curve. Full write-up in the
 `main.py` docstring.

@@ -36,16 +36,19 @@ program adapts to the practice cases and to the final):
 3.  A second, weaker signal: the hour just before midnight (23:00-00:00
     UTC, which already holds the New Zealand / early-Europe wave) relative
     to hour 1.  Where at least 8 qualifying launches have it, the
-    residuals of step 2 are regressed on it too and half of that
-    adjustment is added (leave-one-out correlation with the evening ratio
-    is about +0.5).  The residual spread of the regression, floored at
-    0.15 and capped at 0.90 log units, is the forecast's log spread.
+    residuals of step 2 are regressed on it too and the full adjustment
+    is added (leave-one-out correlation with the evening ratio is about
+    +0.5; full weight beats half weight in leave-one-out pinball, 0.178
+    vs 0.180).  Each hour's residual spread is shrunk toward the pooled
+    spread across all hours (16 pseudo-observations), because a per-hour
+    spread fitted on ~16 launches is noisy; the shrunk spread, floored
+    at 0.15 and capped at 0.90 log units, is the forecast's log spread.
 
 4.  Quantiles are the median times exp(z_tau * sigma), z the standard
     normal quantiles, rounded half-up to 2 decimals.
 
 Leave-one-out pinball loss on the 16 qualifying launches (each held out
-in turn, model refit on the rest): 0.180, against 0.276 for the house
+in turn, model refit on the rest): 0.177, against 0.276 for the house
 persistence baseline on the same launches and 0.225 for the
 scale-free empirical-quantile curve.  The program is deterministic
 (no randomness, no wall-clock or dict-order dependence), standard
@@ -82,6 +85,19 @@ MIN_DAY_HOURS = 20
 SIGMA_FLOOR = 0.15
 SIGMA_CAP = 0.90
 BASELINE_SIGMA = 0.15
+
+# Weight on the before-midnight second signal: the residual regression's
+# slope is an unbiased estimate of the adjustment, so it is applied in
+# full.  Leave-one-out pinball on the 16 qualifying launches is 0.178 at
+# weight 1.0, against 0.180 at the old 0.5 and 0.193 with the signal
+# dropped entirely; it turns back up past 1.0 (0.179 at 1.25).
+SECOND_SIGNAL_WEIGHT = 1.0
+
+# Pseudo-count for shrinking each hour's residual spread toward the
+# pooled spread across all hours: a per-hour spread fitted on ~16
+# launches is noisy, and the pooled spread is far more stable.
+# Leave-one-out pinball improves 0.178 -> 0.177 with the shrinkage.
+SIGMA_POOL_PSEUDO_N = 16
 
 
 def parse_time(text):
@@ -197,7 +213,8 @@ def regression_forecast(train, p1, target_before_ratio):
     log_p1 = math.log(p1)
     log_before = (math.log(target_before_ratio)
                   if target_before_ratio else None)
-    hours = {}
+    per_hour = {}
+    pooled_resid = []
     for hour in range(2, 25):
         rows = [(lp, lb, ratios[hour]) for lp, lb, ratios in train
                 if hour in ratios]
@@ -208,6 +225,7 @@ def regression_forecast(train, p1, target_before_ratio):
         mean_x = sum(xs) / len(xs)
         intercept, slope, sd, resid = ols([x - mean_x for x in xs], ys)
         adjust = clamp(slope * (log_p1 - mean_x), -1.2, 1.2)
+        final_resid = resid
         if log_before is not None:
             paired = [(r[1], e) for r, e in zip(rows, resid)
                       if r[1] is not None]
@@ -216,11 +234,22 @@ def regression_forecast(train, p1, target_before_ratio):
                 var_b = sum((b - mean_b) ** 2 for b, _ in paired)
                 slope2 = (sum((b - mean_b) * e for (b, e) in paired) / var_b
                           if var_b > 0 else 0.0)
-                adjust += clamp(0.5 * slope2 * (log_before - mean_b),
-                                -0.6, 0.6)
-                sd = statistics.pstdev(
-                    [e - slope2 * (b - mean_b) for (b, e) in paired])
-        sigma = clamp(sd, SIGMA_FLOOR, SIGMA_CAP)
+                adjust += clamp(SECOND_SIGNAL_WEIGHT * slope2
+                                * (log_before - mean_b), -0.6, 0.6)
+                final_resid = [e - slope2 * (b - mean_b)
+                               for (b, e) in paired]
+                sd = statistics.pstdev(final_resid)
+        pooled_resid.extend(final_resid)
+        per_hour[hour] = (intercept, adjust, sd, len(final_resid))
+    pooled = (statistics.pstdev(pooled_resid) if len(pooled_resid) > 1
+              else 0.3)
+    hours = {}
+    for hour, (intercept, adjust, sd, n) in per_hour.items():
+        # Shrink the noisy per-hour spread toward the pooled spread.
+        sigma = math.sqrt((n * sd * sd
+                           + SIGMA_POOL_PSEUDO_N * pooled * pooled)
+                          / (n + SIGMA_POOL_PSEUDO_N))
+        sigma = clamp(sigma, SIGMA_FLOOR, SIGMA_CAP)
         centre = intercept + adjust
         hours[hour] = [p1 * math.exp(centre + z * sigma) for z in Z]
     return hours
